@@ -269,6 +269,8 @@ def solve_team30(single_phase: bool, num_phases: int, omega_u: np.float64, degre
         progressbar = tqdm.tqdm(desc="Solving time-dependent problem",
                                 total=int(T / float(dt.value)))
 
+    iters = np.zeros(num_steps)
+
     for i in range(num_steps):
         # Update time step and current density
         if MPI.COMM_WORLD.rank == 0 and progress:
@@ -292,6 +294,7 @@ def solve_team30(single_phase: bool, num_phases: int, omega_u: np.float64, degre
 
         # Solve problem
         solver.solve(b, AzV.vector)
+        iters[i] = solver.its
         AzV.x.scatter_forward()
 
         # Compute losses, torque and induced voltage
@@ -375,6 +378,7 @@ def solve_team30(single_phase: bool, num_phases: int, omega_u: np.float64, degre
         plt.legend()
         plt.savefig(f"{outdir}/voltage_{omega_u}_{ext}.png")
 
+    return np.mean(iters), num_dofs
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -415,7 +419,7 @@ if __name__ == "__main__":
         else:
             return 0
 
-    petsc_options = {"ksp_type": "preonly", "pc_type": "lu"}
+    petsc_options = {"ksp_type": "cg", "pc_type": "gamg"}
     # FIXME: These complex parameters inspired by the template models does not converge
     # petsc_options = {"ksp_type": "gmres", "pc_type": "bjacobi", "ksp_converged_reason": None,
     #                  "ksp_monitor_true_residual": None, "ksp_gmres_modifiedgramschmidt": None,
@@ -430,7 +434,7 @@ if __name__ == "__main__":
                      apply_torque=args.apply_torque, T_ext=T_ext, outdir=outdir, steps_per_phase=args.steps,
                      plot=args.plot, progress=args.progress, save_output=args.output)
     if args.three:
-        outdir = f"TEAM30_{args.omegaU}_tree"
+        outdir = f"TEAM30_{args.omegaU}_three"
         os.system(f"mkdir -p {outdir}")
         solve_team30(False, args.num_phases, args.omegaU, args.degree, petsc_options=petsc_options,
                      apply_torque=args.apply_torque, T_ext=T_ext, outdir=outdir, steps_per_phase=args.steps,
