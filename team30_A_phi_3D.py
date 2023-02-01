@@ -160,19 +160,28 @@ def solve_team30(single_phase: bool, num_phases: int, omega_u: np.float64, degre
     omega = fem.Constant(mesh, PETSc.ScalarType(omega_u))
 
     # Define variational form in 3D
-    a = dt / mu_R * ufl.inner(ufl.curl(A), ufl.curl(v)) * dx(Omega_n + Omega_c)
-    a += dt / mu_R * ufl.inner(v, ufl.cross(n, ufl.curl(A))) * ds
-    a += mu_0 * sigma * ufl.inner(A, v) * dx(Omega_c)
-    a += dt * mu_0 * sigma * ufl.inner(ufl.grad(V), v) * dx(Omega_c)
-    a += dt * mu_0 * sigma * ufl.inner(ufl.grad(V), ufl.grad(q)) * dx(Omega_c)
+    a00 = dt / mu_R * ufl.inner(ufl.curl(A), ufl.curl(v)) * dx(Omega_n + Omega_c) # curl curl
+    a00 += dt / mu_R * ufl.inner(v, ufl.cross(n, ufl.curl(A))) * ds
+    a00 += mu_0 * sigma * ufl.inner(A, v) * dx(Omega_c)
+    a01 = dt * mu_0 * sigma * ufl.inner(ufl.grad(V), v) * dx(Omega_c)
+    a11 = dt * mu_0 * sigma * ufl.inner(ufl.grad(V), ufl.grad(q)) * dx(Omega_c) # poisson
     L = dt * mu_0 * J0z * v[2] * dx(Omega_n)
-    # L += mu_0 * sigma * An * v * dx(Omega_c) # FIXME: where did this term come from?
 
     # Motion voltage term
-    u = omega * ufl.as_vector((-x[1], x[0], 0)) 
-    # try various omega to verify this is right
+    u = omega * ufl.as_vector((-x[1], x[0], 0)) # try various omega to verify this is right
     
-    a += dt * mu_0 * sigma * ufl.inner(ufl.cross(u, ufl.curl(A)), v) * dx(Omega_c)
+    a00 += dt * mu_0 * sigma * ufl.inner(ufl.cross(u, ufl.curl(A)), v) * dx(Omega_c)
+
+    a = a00 + a01 + a11 # treat these seperately
+
+    # -- 2D Form -- #
+    # a = dt / mu_R * ufl.inner(ufl.curl(A), ufl.curl(v)) * dx(Omega_n + Omega_c) # curl curl
+    # a += dt / mu_R * ufl.inner(v, ufl.cross(n, ufl.curl(A))) * ds
+    # a += mu_0 * sigma * ufl.inner(A, v) * dx(Omega_c)
+    # a += dt * mu_0 * sigma * ufl.inner(ufl.grad(V), v) * dx(Omega_c)
+    # a += dt * mu_0 * sigma * ufl.inner(ufl.grad(V), ufl.grad(q)) * dx(Omega_c) # poisson
+    # L = dt * mu_0 * J0z * v[2] * dx(Omega_n)
+    # L += mu_0 * sigma * An * v * dx(Omega_c) # FIXME: where did this term come from?
 
     # Find all dofs in Omega_n for Q-space
     cells_n = np.hstack([ct.find(domain) for domain in Omega_n])
@@ -185,7 +194,7 @@ def solve_team30(single_phase: bool, num_phases: int, omega_u: np.float64, degre
     bc_Q = fem.dirichletbc(zeroQ, deac_dofs, VQ.sub(1))
 
     # Create external boundary condition for V space
-    V_, _ = VQ.sub(0).collapse()
+    V_, _ = VQ.sub(0).collapse() # MPI_ABORT if I use sub(1) which corresponds to V space
     tdim = mesh.topology.dim
 
     def boundary(x):
@@ -201,6 +210,7 @@ def solve_team30(single_phase: bool, num_phases: int, omega_u: np.float64, degre
     # Create sparsity pattern and matrix with additional non-zeros on diagonal
     cpp_a = fem.form(a, form_compiler_options=form_compiler_options,
                      jit_options=jit_parameters)
+    # TODO: how do these stages work for a01, a10, a11
     pattern = fem.create_sparsity_pattern(cpp_a)
     block_size = VQ.dofmap.index_map_bs
     deac_blocks = deac_dofs[0] // block_size
@@ -239,18 +249,19 @@ def solve_team30(single_phase: bool, num_phases: int, omega_u: np.float64, degre
     solver.setOptionsPrefix(prefix)
     solver.setFromOptions()
 
-    if petsc_options["pc_type"] =="ams":
+    if petsc_options["pc_type"] == "other":
 
         ksp = PETSc.KSP().create(mesh.comm)
         ksp.setOptionsPrefix(f"ksp_{id(ksp)}")
-
         pc = ksp.getPC()
         pc.setType("hypre")
         pc.setHYPREType("ams")
 
         # Build discrete gradient
-        V_CG = fem.FunctionSpace(mesh, ("CG", 1))._cpp_object
-        G = discrete_gradient(V_CG, VQ.sub(1).collapse()[0]._cpp_object)
+        G = ufl.FiniteElement("Lagrange", cell, degree)
+        V_CG = fem.FunctionSpace(mesh, G)
+        # one curl one lagrange? 
+        G = discrete_gradient(V_CG._cpp_object, VQ.sub(1).collapse()[0]._cpp_object)
         # FIXME: --> RuntimeError: Wrong finite element space for V1.
         G.assemble()
         pc.setHYPREDiscreteGradient(G)
@@ -283,13 +294,14 @@ def solve_team30(single_phase: bool, num_phases: int, omega_u: np.float64, degre
 
     # Class for computing torque, losses and induced voltage
     # derived = DerivedQuantities2D(AV, AnVn, u, sigma, domains, ct, ft)
-    # FIXME: Not implemented in 3D yet
+    # TODO: Not implemented in 3D yet
     A_out.name = "A"
     post_B.B.name = "B"
     # Create output file
     if save_output:
+        # TODO: Outputting V instead while developing, needs reconfiguring after
         A_vtx = VTXWriter(mesh.comm, f"{outdir}/A.bp", [A_out._cpp_object])
-        B_vtx = VTXWriter(mesh.comm, f"{outdir}/B.bp", [V_out._cpp_object]) # FIXME: Outputting V instead while developing
+        B_vtx = VTXWriter(mesh.comm, f"{outdir}/B.bp", [V_out._cpp_object])
 
     # Computations needed for adding addiitonal torque to engine
     x = ufl.SpatialCoordinate(mesh)
