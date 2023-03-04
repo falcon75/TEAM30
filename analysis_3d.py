@@ -4,8 +4,8 @@ import time
 import numpy as np
 import pandas as pd
 
-from team30_A_phi import solve_team30
-from generate_team30_meshes import generate_team30_mesh, convert_mesh, mesh_parameters
+from team30_A_phi_3D import solve_team30
+from generate_team30_meshes_3D import generate_team30_mesh, convert_mesh, mesh_parameters
 
 
 # Solver Options
@@ -29,32 +29,32 @@ L = 1
 res = 0.002
 # single = False
 # three = True
-# depth = mesh_parameters["r5"]
+depth = mesh_parameters["r5"]
 
 threeD = False
 
-for type, pc in [("preonly", "lu"), ("cg", "gamg")]:
+for type, pc in [("gmres", "none")]: # [("preonly", "lu"), ("cg", "gamg")]:
 
     petsc_options = {"ksp_type": type, "pc_type": pc}
 
     data = []
 
-    for i in range(12):
+    for i in range(8):
 
-        res = 0.0005 / (1.2**i)
+        res = 0.01 / (1.1**i)
         
         os.system("mkdir -p meshes")
 
         if single:
-            fname = "meshes/single_phase"
-            generate_team30_mesh(fname, True, res, L)
-            convert_mesh(fname, "triangle", prune_z=True)
-            convert_mesh(fname, "line", prune_z=True, ext="facets")
+            fname = "meshes/single_phase3D"
+            generate_team30_mesh(fname, True, res, L, depth)
+            convert_mesh(fname, "tetra")
+            convert_mesh(fname, "triangle", ext="facets")
         if three:
-            fname = "meshes/three_phase"
-            generate_team30_mesh(fname, False, res, L)
-            convert_mesh(fname, "triangle", prune_z=True)
-            convert_mesh(fname, "line", prune_z=True, ext="facets")
+            fname = "meshes/three_phase3D"
+            generate_team30_mesh(fname, True, res, L, depth)
+            convert_mesh(fname, "tetra")
+            convert_mesh(fname, "triangle", ext="facets")
 
 
         start = time.time()
@@ -83,5 +83,5 @@ for type, pc in [("preonly", "lu"), ("cg", "gamg")]:
         print(f'Problem size {dof}: complete')
 
     df = pd.DataFrame.from_dict(data)
-    df.to_csv(f'{path}/team30_2D_{type}_{pc}.csv')
+    df.to_csv(f'{path}/team30_3D_{type}_{pc}.csv')
 

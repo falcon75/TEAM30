@@ -35,7 +35,7 @@ degree = 1
 steps = 40
 plot= False
 progress = True
-output = False
+output = True
 mesh_dir = "meshes"
 
 
@@ -91,7 +91,6 @@ v, q = ufl.TestFunctions(VQ)
 AnVn = fem.Function(VQ)
 An, _ = ufl.split(AnVn)  # Solution at previous time step
 J0z = fem.Function(DG0)  # FIXME: Vector current in future
-
 
 # Create integration sets
 Omega_n = domains["Cu"] + domains["Stator"] + domains["Air"] + domains["AirGap"]
@@ -185,53 +184,61 @@ b = fem.petsc.create_vector(cpp_L)
 
 ## -- Solver Set Up -- ##
 
-petsc_options = {"ksp_type": "cg", "pc_type": "ams"}
+preconditioner = "ams"
 
-solver = PETSc.KSP().create(mesh.comm)
-solver.setOperators(A)
+petsc_options = {"solver_type": "cg"}
+ams_options = {"pc_hypre_ams_cycle_type": 1,
+                "pc_hypre_ams_tol": 1e-8,
+                "solver_atol": 1e-8, "solver_rtol": 1e-8,
+                "solver_initial_guess_nonzero": True,
+                "solver_type": "gmres"}
 
-if petsc_options["pc_type"] == "ams":
+ksp = PETSc.KSP().create(mesh.comm)
+ksp.setOptionsPrefix(f"ksp_{id(ksp)}")
 
-    k = 1
+ksp.setOperators(A)
 
-    solver.setOptionsPrefix(f"ksp_{id(solver)}")
-    pc = solver.getPC()
+pc = ksp.getPC()
+opts = PETSc.Options()
+option_prefix = ksp.getOptionsPrefix()
+opts.prefixPush(option_prefix)
+for k, v in petsc_options.items():
+    opts[k] = v
+opts.prefixPop()
+
+if preconditioner == "ams":
+
+    pc.setType("hypre")
+    pc.setHYPREType("ams")
+
+    option_prefix = ksp.getOptionsPrefix()
+    opts.prefixPush(option_prefix)
+    for option, value in ams_options.items():
+        opts[option] = value
+    opts.prefixPop()
+
     M = VQ.sub(0).collapse()[0]
 
     # Build discrete gradient
-    G = ufl.FiniteElement("Lagrange", cell, k)
-    V_CG = fem.FunctionSpace(mesh, G)
+    Gel = ufl.FiniteElement("CG", cell, degree)
+    V_CG = fem.FunctionSpace(mesh, Gel)
     G = discrete_gradient(V_CG._cpp_object, M._cpp_object)
     G.assemble()
 
-    qel = ufl.VectorElement("CG", mesh.ufl_cell(), k)
+    qel = ufl.VectorElement("CG", cell, degree)
     Q3 = fem.FunctionSpace(mesh, qel)
     Pi = interpolation_matrix(Q3._cpp_object, M._cpp_object)
     Pi.assemble()
 
-    pc.setType("hypre")
-    pc.setHYPREType("ams")
     pc.setHYPREDiscreteGradient(G)
     pc.setHYPRESetInterpolations(dim=mesh.geometry.dim, ND_Pi_Full=Pi)
 
 else:
+    
+    pc.setType("gamg")
+    
 
-    prefix = "AV_"
-    # Give PETSc solver options a unique prefix
-    solver_prefix = "TEAM30_solve_{}".format(id(solver))
-    solver.setOptionsPrefix(solver_prefix)
-
-    # Set PETSc options
-    opts = PETSc.Options()
-    opts.prefixPush(solver_prefix)
-    for k, v in petsc_options.items():
-        opts[k] = v
-    opts.prefixPop()
-    solver.setFromOptions()
-    solver.setOptionsPrefix(prefix)
-    solver.setFromOptions()
-
-
+ksp.view()
 
 ## -- Solve -- ##
 
@@ -297,8 +304,8 @@ for i in range(num_steps):
     fem.set_bc(b, bcs)
 
     # Solve problem
-    solver.solve(b, AV.vector)
-    iters[i] = solver.its
+    ksp.solve(b, AV.vector)
+    iters[i] = ksp.its
     AV.x.scatter_forward()
 
     times[i + 1] = t
