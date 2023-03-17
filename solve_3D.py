@@ -39,7 +39,7 @@ steps_per_phase = 100
 
 freq = model_parameters["freq"]
 T = num_phases * 1 / freq
-dt_ = 1 / steps_per_phase * 1 / freq
+dt_ = 1.0 # / steps_per_phase * 1 / freq
 mu_0 = model_parameters["mu_0"]
 omega_J = 2 * np.pi * freq
 
@@ -50,7 +50,6 @@ fname = f"{mesh_dir}/{ext}_phase3D"
 domains, currents = domain_parameters(single_phase)
 
 degree = 1
-
 
 
 ## -- Load Mesh -- ##
@@ -81,7 +80,7 @@ for (material, domain) in domains.items():
     for marker in domain:
         cells = ct.find(marker)
         mu_R.x.array[cells] = model_parameters["mu_r"][material]
-        sigma.x.array[cells] = model_parameters["sigma"][material]
+        sigma.x.array[cells] = 0 # model_parameters["sigma"][material]
         density.x.array[cells] = model_parameters["densities"][material]
 
 Omega_n = domains["Cu"] + domains["Stator"] + domains["Air"] + domains["AirGap"]
@@ -90,7 +89,7 @@ Omega_c = domains["Rotor"] + domains["Al"]
 dx = ufl.Measure("dx", domain=mesh, subdomain_data=ct)
 # ds = ufl.Measure("ds", domain=mesh, subdomain_data=ft, subdomain_id=surface_map["Exterior"])
 
-lagrange_elem = ufl.VectorElement("Lagrange", cell, degree)
+# lagrange_elem = ufl.VectorElement("Lagrange", cell, degree)
 nedelec_elem = ufl.FiniteElement("N1curl", cell, degree)
 A_space = FunctionSpace(mesh, nedelec_elem)
 
@@ -109,11 +108,10 @@ ndofs = A_space.dofmap.index_map.size_global * A_space.dofmap.index_map_bs
 # form_compiler_options = {}
 # jit_options = {}
 
-a = dt * 1 / mu_R * inner(curl(A), curl(v)) * dx(Omega_n + Omega_c) 
-# a += 1 / mu_R * inner(v, cross(n, curl(A))) * ds(Omega_n + Omega_c) # FIXME: Zero?
-a += mu_0 * sigma * inner(A, v) * dx(Omega_c)
+a = dt * 1 / mu_R * inner(curl(A), curl(v)) * dx #(Omega_c + Omega_n)
+a += mu_0 * sigma * inner(A, v) * dx #(Omega_c)
 a = form(a)
-L = form(dt * mu_0 * inner(J0z, v[2]) * dx(Omega_n))
+L = form(dt * mu_0 * inner(J0z, v[2]) * dx) #(Omega_n))
 
 
 
@@ -149,29 +147,22 @@ petsc.set_bc(b, [bc])
 ## -- Solver Set Up -- ##
 
 preconditioner = "ams"
-petsc_options = {"ksp_type": "cg"}
-ams_options = {"pc_hypre_ams_cycle_type": 1,
-                "pc_hypre_ams_tol": 1e-8,
-                "ksp_atol": 1e-6, "ksp_rtol": 4e-1,
-                "ksp_initial_guess_nonzero": True,
-                "ksp_max_iter": 100,
-                "ksp_type": "gmres"}
 
 ksp = PETSc.KSP().create(mesh.comm)
 ksp.setOptionsPrefix(f"ksp_{id(ksp)}")
-
 ksp.setOperators(A)
-
 pc = ksp.getPC()
 opts = PETSc.Options()
-option_prefix = ksp.getOptionsPrefix()
-opts.prefixPush(option_prefix)
-for option, value in petsc_options.items():
-    opts[option] = value
-opts.prefixPop()
 
 if preconditioner == "ams":
     
+    ams_options = {"pc_hypre_ams_cycle_type": 1,
+                "pc_hypre_ams_tol": 1e-8,
+                "ksp_atol": 1e-6, "ksp_rtol": 1.5e-8,
+                "ksp_initial_guess_nonzero": True,
+                # "ksp_max_iter": 100,
+                "ksp_type": "gmres"}
+
     pc.setType("hypre")
     pc.setHYPREType("ams")
 
@@ -193,9 +184,18 @@ if preconditioner == "ams":
     ksp.pc.setHYPREDiscreteGradient(G)
     ksp.pc.setHYPRESetInterpolations(dim=mesh.geometry.dim, ND_Pi_Full=Pi)
 
-    pc.setHYPRESetBetaPoissonMatrix(None) # mass term may be close to zero, be careful
+    # pc.setHYPRESetBetaPoissonMatrix(None) # FIXME: When to set this
 
 elif preconditioner == "gamg":
+
+    petsc_options = {"ksp_type": "gmres", "pc_type": "gamg"}
+
+    option_prefix = ksp.getOptionsPrefix()
+    opts.prefixPush(option_prefix)
+    for option, value in petsc_options.items():
+        opts[option] = value
+    opts.prefixPop()
+
     pc.setType("gamg")
 
 
