@@ -147,7 +147,7 @@ opts = PETSc.Options()
 
 ams_options = {"pc_hypre_ams_cycle_type": 1,
                     "pc_hypre_ams_tol": 1e-8,
-                    "ksp_atol": 1e-8, "ksp_rtol": 1e-8,
+                    "ksp_atol": 1e-10, "ksp_rtol": 1e-8,
                     "ksp_initial_guess_nonzero": True,
                     "ksp_type": "gmres",
                     "ksp_norm_type": "unpreconditioned"
@@ -184,12 +184,13 @@ ksp.setUp()
 
 W1 = VectorFunctionSpace(mesh, ("Discontinuous Lagrange", degree))
 w = Function(W1)
-A_vtx = VTXWriter(mesh.comm, f"out_3D_time.bp", [w._cpp_object])
+A_vtx = VTXWriter(mesh.comm, f"out_3D_time_1.bp", [w._cpp_object])
 
 t = 0
 
 for i in range(100):
 
+    A_out.x.array[:] = 0
     t += dt_
 
     ## -- Update Current and Re-assemble LHS -- ##
