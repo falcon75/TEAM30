@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 from petsc4py import PETSc
 from mpi4py import MPI
 
@@ -18,15 +19,8 @@ from ufl import SpatialCoordinate, as_vector, cos, pi, curl
 from utils import DerivedQuantities2D, MagneticField2D, update_current_density
 from util import save_function
 from generate_team30_meshes import (domain_parameters, model_parameters,
-                                    surface_map)
+                                    surface_map, mesh_parameters)
 
-# Questions
-# - proper way to set options for petsc, prefixes (currently a mess)
-
-# Objectives
-# - investigate time complexity of hyper and higher degrees on TEAM30 irregular mesh
-# - derived quantities and time steps for complete 3D Team 30 preconditioned and verified
-# - research coloumb gauge in 3D (maybe)
 
 # ## -- Parameters -- ##
 
@@ -34,7 +28,7 @@ single = False
 single_phase = single
 three = True
 apply_torque = False
-num_phases = 1
+num_phases = 6
 steps_per_phase = 100
 
 freq = model_parameters["freq"]
@@ -81,6 +75,7 @@ for (material, domain) in domains.items():
     for marker in domain:
         cells = ct.find(marker)
         mu_R.x.array[cells] = model_parameters["mu_r"][material]
+        p = model_parameters["sigma"][material]
         sigma.x.array[cells] = model_parameters["sigma"][material]
         density.x.array[cells] = model_parameters["densities"][material]
 
@@ -183,10 +178,13 @@ ksp.setUp()
 ## -- Time simulation -- ##
 
 W1 = VectorFunctionSpace(mesh, ("Discontinuous Lagrange", degree))
-w = Function(W1)
-A_vtx = VTXWriter(mesh.comm, f"out_3D_time_1.bp", [w._cpp_object])
+A_output = Function(W1)
+B_output = Function(W1)
+A_vtx = VTXWriter(mesh.comm, f"out_3D_time_A.bp", [A_output._cpp_object])
+B_vtx = VTXWriter(mesh.comm, f"out_3D_time_B.bp", [B_output._cpp_object])
 
 t = 0
+results = []
 
 for i in range(100):
 
@@ -209,11 +207,41 @@ for i in range(100):
 
     A_prev.x.array[:] = A_out.x.array # Set A_prev
 
-    ## -- Write Out -- ##
-    w1 = Function(W1)
-    w1.interpolate(A_out)
-    w.x.array[:] = w1.x.array[:]
-    A_vtx.write(t)
+    ## -- Write A -- ##
+    # A_output_1 = Function(W1)
+    # A_output_1.interpolate(A_out)
+    # A_output.x.array[:] = A_output_1.x.array[:]
+    # A_vtx.write(t)
 
-    stats = {"ndofs": ndofs, "solve_time": timing(f"solve")[1], "iterations": ksp.its, "reason": ksp.getConvergedReason(), "max_u": A_out.x.array.max()}
-    print(stats)
+    ## -- Compute B -- ##
+    el_B = ufl.VectorElement("DG", cell, max(degree - 1, 1))
+    VB = fem.FunctionSpace(mesh, el_B)
+    B = fem.Function(VB)
+    B_3D = curl(A_out)
+    Bexpr = fem.Expression(B_3D, VB.element.interpolation_points()) # form_compiler_options=form_compiler_options, jit_options=jit_parameters)
+    B.interpolate(Bexpr)
+    
+    ## -- Write B -- ##
+    B_output_1 = Function(W1)
+    B_output_1.interpolate(B)
+    B_output.x.array[:] = B_output_1.x.array[:]
+    B_vtx.write(t)
+    
+    ## Compute Torque -- ##
+    r = ufl.sqrt(x[0]**2 + x[1]**2 + x[2]**2)
+    Lmotor = 1 # check 
+    Br = ufl.inner(B, x) / r
+    Bphi= ufl.inner(B, ufl.as_vector((-x[1], x[0], x[2]))) / r
+    torque_vol = (r * Lmotor / (mu_0 * (mesh_parameters["r3"] - mesh_parameters["r2"])) * Br * Bphi) * dx(domains["AirGap"])
+    volume_torque = fem.form(torque_vol)
+    torque = mesh.comm.allreduce(fem.assemble_scalar(volume_torque), op=MPI.SUM)
+
+    min_cond = model_parameters['sigma']['Cu']
+    result = {"step": i, "ndofs": ndofs, "min_cond": min_cond, "solve_time": timing(f"solve")[1], 
+              "iterations": ksp.its, "reason": ksp.getConvergedReason(), 
+              "norm_A": np.linalg.norm(A_out.x.array), "torque": torque}
+    print(result)
+    results.append(result)
+
+    df = pd.DataFrame.from_dict(results)
+    df.to_csv(f'results/torque_beta_1.csv', mode="w")
