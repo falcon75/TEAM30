@@ -108,7 +108,7 @@ a = dt * 1 / mu_R * inner(curl(A), curl(v)) * dx(Omega_c + Omega_n)
 a += sigma * mu_0 * inner(A, v) * dx(Omega_c + Omega_n)
 a = form(a)
 
-L = dt * inner(J0z, v[2]) * dx(Omega_n)
+L = dt * mu_0 * J0z * v[2] * dx(Omega_n)
 L += sigma * mu_0 * inner(A_prev, v) * dx(Omega_c + Omega_n)
 L = form(L)
 
@@ -199,6 +199,7 @@ for i in range(100):
     petsc.apply_lifting(b, [a], bcs=[[bc]])
     b.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
     petsc.set_bc(b, [bc])
+    max_b = max(b.array)
 
     ## -- Solve -- ##
     with Timer(f"solve"):
@@ -231,7 +232,7 @@ for i in range(100):
     r = ufl.sqrt(x[0]**2 + x[1]**2 + x[2]**2)
     Lmotor = 1 # check 
     Br = ufl.inner(B, x) / r
-    Bphi= ufl.inner(B, ufl.as_vector((-x[1], x[0], x[2]))) / r
+    Bphi = ufl.inner(B, ufl.as_vector((-x[1], x[0], x[2]))) / r
     torque_vol = (r * Lmotor / (mu_0 * (mesh_parameters["r3"] - mesh_parameters["r2"])) * Br * Bphi) * dx(domains["AirGap"])
     volume_torque = fem.form(torque_vol)
     torque = mesh.comm.allreduce(fem.assemble_scalar(volume_torque), op=MPI.SUM)
@@ -239,9 +240,9 @@ for i in range(100):
     min_cond = model_parameters['sigma']['Cu']
     result = {"step": i, "ndofs": ndofs, "min_cond": min_cond, "solve_time": timing(f"solve")[1], 
               "iterations": ksp.its, "reason": ksp.getConvergedReason(), 
-              "norm_A": np.linalg.norm(A_out.x.array), "torque": torque}
+              "norm_A": np.linalg.norm(A_out.x.array), "max_b": max_b, "torque": torque}
     print(result)
     results.append(result)
 
     df = pd.DataFrame.from_dict(results)
-    df.to_csv(f'results/torque_beta_1.csv', mode="w")
+    df.to_csv(f'results/torque.csv', mode="w")
