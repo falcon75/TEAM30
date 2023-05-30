@@ -22,6 +22,7 @@ from generate_team30_meshes import (domain_parameters, model_parameters,
                                     surface_map, mesh_parameters)
 
 
+
 # ## -- Parameters -- ##
 
 single = False
@@ -63,7 +64,6 @@ with io.XDMFFile(MPI.COMM_WORLD, f"{fname}_facets.xdmf", "r") as xdmf:
 
 x = SpatialCoordinate(mesh)
 cell = mesh.ufl_cell()
-# n = ufl.FacetNormal(mesh)
 dt = fem.Constant(mesh, dt_)
 
 DG0 = fem.FunctionSpace(mesh, ("DG", 0))
@@ -83,9 +83,6 @@ Omega_n = domains["Cu"] + domains["Stator"] + domains["Air"] + domains["AirGap"]
 Omega_c = domains["Rotor"] + domains["Al"]
 
 dx = ufl.Measure("dx", domain=mesh, subdomain_data=ct)
-# ds = ufl.Measure("ds", domain=mesh, subdomain_data=ft, subdomain_id=surface_map["Exterior"])
-
-# lagrange_elem = ufl.VectorElement("Lagrange", cell, degree)
 nedelec_elem = ufl.FiniteElement("N1curl", cell, degree)
 A_space = FunctionSpace(mesh, nedelec_elem)
 
@@ -180,8 +177,8 @@ ksp.setUp()
 W1 = VectorFunctionSpace(mesh, ("Discontinuous Lagrange", degree))
 A_output = Function(W1)
 B_output = Function(W1)
-A_vtx = VTXWriter(mesh.comm, f"out_3D_time_A.bp", [A_output._cpp_object])
-B_vtx = VTXWriter(mesh.comm, f"out_3D_time_B.bp", [B_output._cpp_object])
+# A_vtx = VTXWriter(mesh.comm, f"out_3D_time_A.bp", [A_output._cpp_object])
+# B_vtx = VTXWriter(mesh.comm, f"out_3D_time_B_1.bp", [B_output._cpp_object])
 
 t = 0
 results = []
@@ -206,8 +203,6 @@ for i in range(100):
         ksp.solve(b, A_out.vector)
         A_out.x.scatter_forward()
 
-    A_prev.x.array[:] = A_out.x.array # Set A_prev
-
     ## -- Write A -- ##
     # A_output_1 = Function(W1)
     # A_output_1.interpolate(A_out)
@@ -215,34 +210,32 @@ for i in range(100):
     # A_vtx.write(t)
 
     ## -- Compute B -- ##
-    el_B = ufl.VectorElement("DG", cell, max(degree - 1, 1))
-    VB = fem.FunctionSpace(mesh, el_B)
-    B = fem.Function(VB)
-    B_3D = curl(A_out)
-    Bexpr = fem.Expression(B_3D, VB.element.interpolation_points()) # form_compiler_options=form_compiler_options, jit_options=jit_parameters)
-    B.interpolate(Bexpr)
+    # el_B = ufl.VectorElement("DG", cell, max(degree - 1, 1))
+    # VB = fem.FunctionSpace(mesh, el_B)
+    # B = fem.Function(VB)
+    # B_3D = curl(A_out)
+    # Bexpr = fem.Expression(B_3D, VB.element.interpolation_points()) # form_compiler_options=form_compiler_options, jit_options=jit_parameters)
+    # B.interpolate(Bexpr)
+
+    # E = - (A_out - A_prev) / dt
+    # f = E + cross(sigma * E, B)
+    # F = fem.Function(VB)
+    # fexpr = fem.Expression(f, VB.element.interpolation_points())
+    # F.interpolate(fexpr)
+    # A_prev.x.array[:] = A_out.x.array # Set A_prev
     
-    ## -- Write B -- ##
-    B_output_1 = Function(W1)
-    B_output_1.interpolate(B)
-    B_output.x.array[:] = B_output_1.x.array[:]
-    B_vtx.write(t)
-    
-    ## Compute Torque -- ##
-    r = ufl.sqrt(x[0]**2 + x[1]**2 + x[2]**2)
-    Lmotor = 1 # check 
-    Br = ufl.inner(B, x) / r
-    Bphi = ufl.inner(B, ufl.as_vector((-x[1], x[0], x[2]))) / r
-    torque_vol = (r * Lmotor / (mu_0 * (mesh_parameters["r3"] - mesh_parameters["r2"])) * Br * Bphi) * dx(domains["AirGap"])
-    volume_torque = fem.form(torque_vol)
-    torque = mesh.comm.allreduce(fem.assemble_scalar(volume_torque), op=MPI.SUM)
+    # ## -- Write B -- ##
+    # B_output_1 = Function(W1)
+    # B_output_1.interpolate(B)
+    # B_output.x.array[:] = B_output_1.x.array[:]
+    # B_vtx.write(t)
 
     min_cond = model_parameters['sigma']['Cu']
     result = {"step": i, "ndofs": ndofs, "min_cond": min_cond, "solve_time": timing(f"solve")[1], 
               "iterations": ksp.its, "reason": ksp.getConvergedReason(), 
-              "norm_A": np.linalg.norm(A_out.x.array), "max_b": max_b, "torque": torque}
+              "norm_A": np.linalg.norm(A_out.x.array), "max_b": max_b} # , "torque": torque}
     print(result)
     results.append(result)
 
     df = pd.DataFrame.from_dict(results)
-    df.to_csv(f'results/torque.csv', mode="w")
+    df.to_csv(f'results/high_res_{mesh.comm.size}.csv', mode="w")
