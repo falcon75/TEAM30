@@ -20,7 +20,7 @@ except ImportError:
 
 __all__ = ["model_parameters", "mesh_parameters", "domain_parameters", "surface_map", "generate_team30_mesh"]
 
-p = 1e-6
+p = 1e-5
 # Model parameters for the TEAM 3- model
 model_parameters = {
     "mu_0": 1.25663753e-6,  # Relative permability of air [H/m]=[kg m/(s^2 A^2)]
